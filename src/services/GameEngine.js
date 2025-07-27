@@ -1,327 +1,397 @@
-import { v4 as uuidv4 } from 'uuid';
-import { runQuery, getQuery, allQuery } from '../database/connection.js';
+import { generateCrashPoint, generateSeed } from '../utils/crashPoint.js';
+import GameRound from '../models/GameRound.js';
+import Player from '../models/Player.js';
+import Transaction from '../models/Transaction.js';
+import priceFetcher from '../utils/priceFetcher.js';
 import logger from '../utils/logger.js';
 
 export class GameEngine {
   constructor(io) {
     this.io = io;
     this.currentRound = null;
-    this.gameState = 'waiting'; // waiting, betting, running, crashed
-    this.multiplier = 1.0;
-    this.crashPoint = 0;
-    this.startTime = null;
-    this.bettingTimer = null;
+    this.roundNumber = 0;
+    this.isRunning = false;
     this.gameTimer = null;
-    this.activeBets = new Map();
+    this.multiplierTimer = null;
+    this.currentMultiplier = 1.0;
     
     // Game configuration
-    this.BETTING_TIME = 10000; // 10 seconds
-    this.MULTIPLIER_INCREMENT = 0.01;
-    this.UPDATE_INTERVAL = 100; // 100ms
-    this.MIN_MULTIPLIER = 1.0;
-    this.MAX_MULTIPLIER = parseFloat(process.env.MAX_MULTIPLIER) || 100.0;
-    this.HOUSE_EDGE = parseFloat(process.env.HOUSE_EDGE) || 0.01;
+    this.roundDuration = parseInt(process.env.GAME_ROUND_DURATION_MS) || 10000; // 10 seconds
+    this.multiplierTick = parseInt(process.env.MULTIPLIER_TICK_MS) || 100; // 100ms
+    this.multiplierIncrement = 0.01;
+    this.bettingWindow = 5000; // 5 seconds for betting after round starts
   }
 
-  start() {
-    logger.info('Game engine starting...');
+  /**
+   * Start the game engine
+   */
+  async start() {
+    if (this.isRunning) {
+      logger.warn('Game engine is already running');
+      return;
+    }
+
+    this.isRunning = true;
+    logger.info('Starting game engine...');
+    
+    // Get the latest round number from database
+    try {
+      const latestRound = await GameRound.findOne().sort({ roundNumber: -1 });
+      this.roundNumber = latestRound ? latestRound.roundNumber : 0;
+      logger.info(`Resuming from round number: ${this.roundNumber}`);
+    } catch (error) {
+      logger.error('Failed to get latest round number:', error);
+      this.roundNumber = 0;
+    }
+
+    // Start first round immediately
     this.startNewRound();
   }
 
+  /**
+   * Stop the game engine
+   */
   stop() {
-    logger.info('Game engine stopping...');
-    if (this.bettingTimer) clearTimeout(this.bettingTimer);
-    if (this.gameTimer) clearInterval(this.gameTimer);
+    if (!this.isRunning) return;
+
+    this.isRunning = false;
+    logger.info('Stopping game engine...');
+
+    if (this.gameTimer) {
+      clearTimeout(this.gameTimer);
+      this.gameTimer = null;
+    }
+
+    if (this.multiplierTimer) {
+      clearInterval(this.multiplierTimer);
+      this.multiplierTimer = null;
+    }
+
+    // End current round if active
+    if (this.currentRound && this.currentRound.status === 'active') {
+      this.endRound();
+    }
   }
 
+  /**
+   * Start a new game round
+   */
   async startNewRound() {
+    if (!this.isRunning) return;
+
     try {
-      // Generate new round
-      const roundId = uuidv4();
-      this.crashPoint = this.generateCrashPoint();
-      this.currentRound = roundId;
-      this.gameState = 'betting';
-      this.multiplier = 1.0;
-      this.activeBets.clear();
+      this.roundNumber++;
+      const seed = generateSeed();
+      const crashPoint = generateCrashPoint(seed, this.roundNumber);
 
-      // Save round to database
-      await runQuery(
-        'INSERT INTO game_rounds (round_id, crash_point, start_time, status) VALUES (?, ?, ?, ?)',
-        [roundId, this.crashPoint, new Date().toISOString(), 'waiting']
-      );
-
-      logger.info(`New round started: ${roundId}, crash point: ${this.crashPoint}`);
-
-      // Broadcast new round to all clients
-      this.io.emit('round_started', {
-        roundId,
-        bettingTime: this.BETTING_TIME,
-        timestamp: Date.now()
+      // Create new round in database
+      this.currentRound = new GameRound({
+        roundNumber: this.roundNumber,
+        crashPoint,
+        seed,
+        startTime: new Date(),
+        status: 'active'
       });
 
-      // Start betting countdown
-      this.bettingTimer = setTimeout(() => {
-        this.startGameRound();
-      }, this.BETTING_TIME);
+      await this.currentRound.save();
+      logger.info(`Started round ${this.roundNumber} with crash point ${crashPoint}`);
+
+      // Reset multiplier
+      this.currentMultiplier = 1.0;
+
+      // Broadcast round start
+      this.io.emit('round_start', {
+        roundNumber: this.roundNumber,
+        startTime: this.currentRound.startTime,
+        bettingWindow: this.bettingWindow
+      });
+
+      // Start multiplier ticker
+      this.startMultiplierTicker();
+
+      // Schedule round end
+      this.gameTimer = setTimeout(() => {
+        this.endRound();
+      }, this.roundDuration);
 
     } catch (error) {
-      logger.error('Error starting new round:', error);
+      logger.error('Failed to start new round:', error);
+      // Try to start another round after a delay
       setTimeout(() => this.startNewRound(), 5000);
     }
   }
 
-  async startGameRound() {
-    try {
-      this.gameState = 'running';
-      this.startTime = Date.now();
-      
-      // Update round status in database
-      await runQuery(
-        'UPDATE game_rounds SET status = ? WHERE round_id = ?',
-        ['running', this.currentRound]
-      );
+  /**
+   * Start the multiplier ticker
+   */
+  startMultiplierTicker() {
+    this.multiplierTimer = setInterval(() => {
+      if (!this.currentRound || this.currentRound.status !== 'active') {
+        clearInterval(this.multiplierTimer);
+        return;
+      }
 
-      this.io.emit('round_running', {
-        roundId: this.currentRound,
-        timestamp: this.startTime
-      });
+      // Check if we've reached the crash point
+      if (this.currentMultiplier >= this.currentRound.crashPoint) {
+        this.endRound();
+        return;
+      }
 
-      // Start multiplier updates
-      this.gameTimer = setInterval(() => {
-        this.updateMultiplier();
-      }, this.UPDATE_INTERVAL);
+      // Increment multiplier
+      this.currentMultiplier += this.multiplierIncrement;
+      this.currentMultiplier = Math.round(this.currentMultiplier * 100) / 100;
 
-    } catch (error) {
-      logger.error('Error starting game round:', error);
-    }
+      // Broadcast multiplier update every second (10 ticks)
+      if (Math.round(this.currentMultiplier * 100) % 100 === 0) {
+        this.io.emit('multiplier_update', {
+          roundNumber: this.roundNumber,
+          multiplier: this.currentMultiplier,
+          crashPoint: this.currentRound.crashPoint
+        });
+      }
+
+    }, this.multiplierTick);
   }
 
-  updateMultiplier() {
-    if (this.gameState !== 'running') return;
+  /**
+   * End the current round
+   */
+  async endRound() {
+    if (!this.currentRound || this.currentRound.status !== 'active') return;
 
-    const elapsed = Date.now() - this.startTime;
-    this.multiplier = 1 + (elapsed / 1000) * 0.1; // Adjust growth rate as needed
-
-    // Check if crash point reached
-    if (this.multiplier >= this.crashPoint) {
-      this.crashGame();
-      return;
-    }
-
-    // Broadcast multiplier update
-    this.io.emit('multiplier_update', {
-      roundId: this.currentRound,
-      multiplier: parseFloat(this.multiplier.toFixed(2)),
-      timestamp: Date.now()
-    });
-  }
-
-  async crashGame() {
     try {
-      this.gameState = 'crashed';
-      clearInterval(this.gameTimer);
+      // Stop timers
+      if (this.gameTimer) {
+        clearTimeout(this.gameTimer);
+        this.gameTimer = null;
+      }
+      if (this.multiplierTimer) {
+        clearInterval(this.multiplierTimer);
+        this.multiplierTimer = null;
+      }
 
       // Update round status
-      await runQuery(
-        'UPDATE game_rounds SET status = ?, end_time = ? WHERE round_id = ?',
-        ['crashed', new Date().toISOString(), this.currentRound]
-      );
+      this.currentRound.status = 'completed';
+      this.currentRound.endTime = new Date();
+      this.currentRound.finalMultiplier = this.currentMultiplier;
+      await this.currentRound.save();
 
-      // Process all active bets
-      await this.processActiveBets();
+      logger.info(`Round ${this.roundNumber} ended at multiplier ${this.currentMultiplier}x (crash point: ${this.currentRound.crashPoint}x)`);
 
-      // Broadcast crash
-      this.io.emit('round_crashed', {
-        roundId: this.currentRound,
-        crashPoint: this.crashPoint,
-        timestamp: Date.now()
+      // Broadcast round end
+      this.io.emit('round_end', {
+        roundNumber: this.roundNumber,
+        crashPoint: this.currentRound.crashPoint,
+        finalMultiplier: this.currentMultiplier,
+        endTime: this.currentRound.endTime,
+        totalBets: this.currentRound.bets.length,
+        totalCashouts: this.currentRound.cashouts.length
       });
 
-      logger.info(`Round ${this.currentRound} crashed at ${this.crashPoint}x`);
-
-      // Wait 5 seconds before starting new round
-      setTimeout(() => {
-        this.startNewRound();
-      }, 5000);
+      // Schedule next round
+      if (this.isRunning) {
+        setTimeout(() => this.startNewRound(), 3000); // 3 second break between rounds
+      }
 
     } catch (error) {
-      logger.error('Error crashing game:', error);
+      logger.error('Failed to end round:', error);
     }
   }
 
-  async placeBet(userId, amount, socketId) {
+  /**
+   * Place a bet for a player
+   */
+  async placeBet(playerId, usdAmount, currency) {
+    if (!this.currentRound) {
+      throw new Error('No active round');
+    }
+
+    if (!this.currentRound.isBettingAllowed()) {
+      throw new Error('Betting window has closed for this round');
+    }
+
+    // Validate inputs
+    if (usdAmount < 0.01) {
+      throw new Error('Minimum bet is $0.01');
+    }
+
+    if (!['BTC', 'ETH'].includes(currency)) {
+      throw new Error('Invalid currency. Must be BTC or ETH');
+    }
+
     try {
-      if (this.gameState !== 'betting') {
-        throw new Error('Betting is not active');
+      // Get player and current prices
+      const [player, currentPrice] = await Promise.all([
+        Player.findById(playerId),
+        priceFetcher.getPrice(currency)
+      ]);
+
+      if (!player) {
+        throw new Error('Player not found');
       }
 
-      if (amount < parseFloat(process.env.MIN_BET_AMOUNT) || 
-          amount > parseFloat(process.env.MAX_BET_AMOUNT)) {
-        throw new Error('Invalid bet amount');
+      // Convert USD to crypto amount
+      const cryptoAmount = usdAmount / currentPrice;
+
+      // Check if player has sufficient balance
+      if (!player.hasSufficientBalance(cryptoAmount, currency)) {
+        throw new Error(`Insufficient ${currency} balance`);
       }
 
-      // Check if user already has a bet in this round
-      if (this.activeBets.has(userId)) {
-        throw new Error('You already have a bet in this round');
-      }
+      // Deduct from player's wallet
+      player.deductFromWallet(cryptoAmount, currency);
+      await player.save();
 
-      // Check user balance
-      const user = await getQuery('SELECT balance FROM users WHERE id = ?', [userId]);
-      if (!user || user.balance < amount) {
-        throw new Error('Insufficient balance');
-      }
+      // Add bet to round
+      this.currentRound.addBet(playerId, usdAmount, cryptoAmount, currency);
+      await this.currentRound.save();
 
-      // Deduct balance and create bet
-      const betId = uuidv4();
-      
-      await runQuery('BEGIN TRANSACTION');
-      
-      await runQuery(
-        'UPDATE users SET balance = balance - ? WHERE id = ?',
-        [amount, userId]
+      // Create transaction record
+      const transaction = Transaction.createBet(
+        playerId,
+        this.currentRound._id,
+        usdAmount,
+        cryptoAmount,
+        currency,
+        currentPrice
       );
+      await transaction.save();
 
-      await runQuery(
-        'INSERT INTO bets (bet_id, user_id, round_id, bet_amount, status) VALUES (?, ?, ?, ?, ?)',
-        [betId, userId, this.currentRound, amount, 'active']
-      );
-
-      await runQuery('COMMIT');
-
-      // Add to active bets
-      this.activeBets.set(userId, {
-        betId,
-        amount,
-        socketId,
-        cashedOut: false
-      });
+      logger.info(`Player ${playerId} bet $${usdAmount} (${cryptoAmount} ${currency}) on round ${this.roundNumber}`);
 
       // Broadcast bet placed
       this.io.emit('bet_placed', {
-        userId,
-        betId,
-        amount,
-        roundId: this.currentRound
+        roundNumber: this.roundNumber,
+        playerId,
+        playerName: player.name,
+        usdAmount,
+        cryptoAmount,
+        currency,
+        timestamp: new Date()
       });
 
-      return { success: true, betId };
-
-    } catch (error) {
-      await runQuery('ROLLBACK');
-      throw error;
-    }
-  }
-
-  async cashOut(userId, socketId) {
-    try {
-      if (this.gameState !== 'running') {
-        throw new Error('Cannot cash out now');
-      }
-
-      const bet = this.activeBets.get(userId);
-      if (!bet || bet.cashedOut) {
-        throw new Error('No active bet found');
-      }
-
-      const cashOutMultiplier = this.multiplier;
-      const cashOutAmount = bet.amount * cashOutMultiplier;
-      const profit = cashOutAmount - bet.amount;
-
-      // Mark as cashed out
-      bet.cashedOut = true;
-      bet.cashOutMultiplier = cashOutMultiplier;
-      bet.cashOutAmount = cashOutAmount;
-
-      await runQuery('BEGIN TRANSACTION');
-
-      // Update user balance
-      await runQuery(
-        'UPDATE users SET balance = balance + ?, total_won = total_won + ? WHERE id = ?',
-        [cashOutAmount, profit, userId]
-      );
-
-      // Update bet record
-      await runQuery(
-        'UPDATE bets SET status = ?, cash_out_at = ?, cash_out_amount = ?, profit = ?, cashed_out_at = ? WHERE bet_id = ?',
-        ['cashed_out', cashOutMultiplier, cashOutAmount, profit, new Date().toISOString(), bet.betId]
-      );
-
-      await runQuery('COMMIT');
-
-      // Broadcast cash out
-      this.io.emit('user_cashed_out', {
-        userId,
-        betId: bet.betId,
-        multiplier: cashOutMultiplier,
-        amount: cashOutAmount,
-        profit,
-        roundId: this.currentRound
-      });
-
-      return { 
-        success: true, 
-        multiplier: cashOutMultiplier,
-        amount: cashOutAmount,
-        profit 
+      return {
+        success: true,
+        transactionId: transaction.txHash,
+        cryptoAmount,
+        currentPrice,
+        remainingBalance: player.wallet[currency]
       };
 
     } catch (error) {
-      await runQuery('ROLLBACK');
+      logger.error('Failed to place bet:', error);
       throw error;
     }
   }
 
-  async processActiveBets() {
-    try {
-      await runQuery('BEGIN TRANSACTION');
+  /**
+   * Cash out a player's bet
+   */
+  async cashOut(playerId) {
+    if (!this.currentRound || this.currentRound.status !== 'active') {
+      throw new Error('No active round or round has ended');
+    }
 
-      for (const [userId, bet] of this.activeBets) {
-        if (!bet.cashedOut) {
-          // Mark bet as lost
-          await runQuery(
-            'UPDATE bets SET status = ?, profit = ? WHERE bet_id = ?',
-            ['lost', -bet.amount, bet.betId]
-          );
-        }
+    if (this.currentMultiplier >= this.currentRound.crashPoint) {
+      throw new Error('Round has crashed, cannot cash out');
+    }
+
+    try {
+      // Find player's bet in current round
+      const playerBet = this.currentRound.bets.find(
+        bet => bet.player.toString() === playerId.toString()
+      );
+
+      if (!playerBet) {
+        throw new Error('No bet found for this round');
       }
 
-      await runQuery('COMMIT');
+      // Check if already cashed out
+      const existingCashout = this.currentRound.cashouts.find(
+        cashout => cashout.player.toString() === playerId.toString()
+      );
+
+      if (existingCashout) {
+        throw new Error('Already cashed out for this round');
+      }
+
+      // Calculate payout
+      const cryptoPayout = playerBet.cryptoAmt * this.currentMultiplier;
+      const currentPrice = await priceFetcher.getPrice(playerBet.currency);
+      const usdPayout = cryptoPayout * currentPrice;
+
+      // Get player and update wallet
+      const player = await Player.findById(playerId);
+      if (!player) {
+        throw new Error('Player not found');
+      }
+
+      player.addToWallet(cryptoPayout, playerBet.currency);
+      player.totalWins += 1;
+      await player.save();
+
+      // Add cashout to round
+      this.currentRound.addCashout(playerId, usdPayout, this.currentMultiplier);
+      await this.currentRound.save();
+
+      // Create transaction record
+      const transaction = Transaction.createCashout(
+        playerId,
+        this.currentRound._id,
+        usdPayout,
+        cryptoPayout,
+        playerBet.currency,
+        currentPrice,
+        this.currentMultiplier
+      );
+      await transaction.save();
+
+      logger.info(`Player ${playerId} cashed out at ${this.currentMultiplier}x for $${usdPayout.toFixed(2)}`);
+
+      // Broadcast cashout
+      this.io.emit('player_cashout', {
+        roundNumber: this.roundNumber,
+        playerId,
+        playerName: player.name,
+        multiplier: this.currentMultiplier,
+        usdPayout: usdPayout.toFixed(2),
+        cryptoPayout,
+        currency: playerBet.currency,
+        timestamp: new Date()
+      });
+
+      return {
+        success: true,
+        transactionId: transaction.txHash,
+        multiplier: this.currentMultiplier,
+        usdPayout,
+        cryptoPayout,
+        currency: playerBet.currency,
+        newBalance: player.wallet[playerBet.currency]
+      };
+
     } catch (error) {
-      await runQuery('ROLLBACK');
-      logger.error('Error processing active bets:', error);
+      logger.error('Failed to cash out:', error);
+      throw error;
     }
   }
 
-  generateCrashPoint() {
-    // Use provably fair algorithm to generate crash point
-    // This is a simplified version - in production, use cryptographic randomness
-    const houseEdge = this.HOUSE_EDGE;
-    const random = Math.random();
-    
-    // Calculate crash point with house edge
-    const crashPoint = Math.max(
-      this.MIN_MULTIPLIER,
-      Math.min(
-        this.MAX_MULTIPLIER,
-        (1 / (1 - random * (1 - houseEdge)))
-      )
-    );
-
-    return parseFloat(crashPoint.toFixed(2));
-  }
-
-  getCurrentGameState() {
+  /**
+   * Get current game state
+   */
+  getCurrentState() {
     return {
-      roundId: this.currentRound,
-      state: this.gameState,
-      multiplier: parseFloat(this.multiplier.toFixed(2)),
-      crashPoint: this.gameState === 'crashed' ? this.crashPoint : null,
-      activeBets: Array.from(this.activeBets.entries()).map(([userId, bet]) => ({
-        userId,
-        amount: bet.amount,
-        cashedOut: bet.cashedOut,
-        cashOutMultiplier: bet.cashOutMultiplier
-      }))
+      roundNumber: this.roundNumber,
+      currentRound: this.currentRound ? {
+        roundNumber: this.currentRound.roundNumber,
+        status: this.currentRound.status,
+        startTime: this.currentRound.startTime,
+        currentMultiplier: this.currentMultiplier,
+        betsCount: this.currentRound.bets.length,
+        cashoutsCount: this.currentRound.cashouts.length,
+        bettingAllowed: this.currentRound.isBettingAllowed()
+      } : null,
+      isRunning: this.isRunning
     };
   }
 }

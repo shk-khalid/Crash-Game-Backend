@@ -1,4 +1,3 @@
-import 'module-alias/register.js'
 import dotenv from 'dotenv'
 dotenv.config()
 
@@ -62,6 +61,9 @@ app.use(errorHandler)
 // Initialize everything
 const gameEngine = new GameEngine(io)
 const socketHandler = new SocketHandler(io, gameEngine)
+
+// Make game engine available to routes
+app.locals.gameEngine = gameEngine
 
 async function startServer() {
   try {

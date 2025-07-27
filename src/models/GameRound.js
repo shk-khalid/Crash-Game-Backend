@@ -56,7 +56,7 @@ const gameRoundSchema = new mongoose.Schema({
         unique: true,
         index: true,
     },
-    crashpoint: {
+    crashPoint: {
         type: Number,
         required: true,
         min: 1.0,
