@@ -1,347 +1,364 @@
-# 🎲 Crash Game Backend MVP
+# Crypto Crash Game MVP Backend
 
-A real-time multiplayer crash game backend built with Node.js, Express, Socket.IO, and SQLite. Players place bets and cash out before the multiplier crashes!
+A real-time multiplayer crypto crash game backend built with Node.js, Express, MongoDB, and Socket.IO.
 
-## 🚀 Features
+## Features
 
-### Core Game Mechanics
-- **Real-time Multiplier**: Live multiplier updates every 100ms
-- **Provably Fair**: Transparent crash point generation
-- **Betting System**: Place bets during betting phase (10 seconds)
-- **Cash Out**: Cash out anytime during the game round
-- **Auto Cash Out**: Optional automatic cash out at specified multiplier
+- **Real-time multiplayer gameplay** using WebSockets
+- **Provably fair crash points** using SHA256 algorithm
+- **Crypto wallet system** with BTC and ETH support
+- **Live price feeds** from CoinGecko API (cached for 10 seconds)
+- **RESTful API** for game operations
+- **Database persistence** with MongoDB
+- **Transaction history** and player statistics
 
-### User Management
-- **User Registration & Authentication**: JWT-based auth system
-- **User Profiles**: Comprehensive user statistics and history
-- **Balance Management**: Real-time balance updates
-- **Password Security**: Bcrypt hashing with salt rounds
+## Tech Stack
 
-### Real-time Features
-- **Live Game Updates**: Socket.IO for instant updates
-- **Chat System**: Real-time chat during games
-- **User Presence**: Track connected users
-- **Game History**: Live betting history and results
-
-### Statistics & Analytics
-- **Game Statistics**: Round statistics and analytics
-- **User Statistics**: Personal betting history and performance
-- **Leaderboards**: Daily, weekly, monthly, and all-time rankings
-- **Profit/Loss Tracking**: Detailed financial tracking
-
-## 🛠️ Tech Stack
-
-- **Backend**: Node.js + Express.js
+- **Backend**: Node.js + Express
+- **Database**: MongoDB + Mongoose
 - **Real-time**: Socket.IO
-- **Database**: SQLite3 (easily replaceable with PostgreSQL/MySQL)
-- **Authentication**: JWT + Bcrypt
-- **Validation**: Joi + Express Validator
-- **Logging**: Winston
-- **Security**: Helmet, CORS, Rate Limiting
+- **External APIs**: CoinGecko for crypto prices
+- **Security**: Helmet, CORS, Rate limiting
 
-## 📦 Installation
+<!-- ## Project Structure
 
-1. **Clone the repository**
+```
+crypto-crash/
+├── models/
+│   ├── Player.js          # Player model with wallet
+│   ├── GameRound.js       # Game round with bets and cashouts
+│   └── Transaction.js     # Transaction history
+├── services/
+│   ├── GameEngine.js      # Core game logic and round management
+│   └── SocketHandler.js   # WebSocket event handling
+├── routes/
+│   ├── auth.js           # Authentication endpoints (placeholder)
+│   ├── user.js           # Player management
+│   └── game.js           # Game operations
+├── utils/
+│   ├── crashPoint.js     # Provably fair crash point generation
+│   ├── priceFetcher.js   # CoinGecko API wrapper with caching
+│   └── logger.js         # Logging utility
+├── middleware/
+│   └── errorHandler.js   # Global error handling
+├── database/
+│   └── connection.js     # MongoDB connection setup
+├── scripts/
+│   └── seed.js           # Database seeding script
+├── server.js             # Main server file
+├── .env                  # Environment configuration 
+└── README.md
+```
+-->
+## Installation & Setup
+
+### 1. Prerequisites
+
+- Node.js (v18 or higher)
+- MongoDB (running locally or MongoDB Atlas)
+- npm or yarn package manager
+
+### 2. Clone and Install
+
 ```bash
 git clone <repository-url>
-cd crash-game-backend
-```
-
-2. **Install dependencies**
-```bash
+cd crypto-crash
 npm install
 ```
 
-3. **Set up environment variables**
+### 3. Environment Configuration
+
+Copy the `.env` file and configure your settings:
+
 ```bash
-cp .env.example .env
-# Edit .env with your configuration
+cp .env .env.local
 ```
 
-4. **Initialize database**
-```bash
-npm run migrate
-```
+Edit `.env` with your configuration:
 
-5. **Start the server**
-```bash
-# Development
-npm run dev
-
-# Production
-npm start
-```
-
-## 🎮 Game Flow
-
-### 1. Betting Phase (10 seconds)
-- Players can place bets
-- Multiple bets per user not allowed in same round
-- Minimum and maximum bet limits enforced
-- Real-time bet updates to all connected clients
-
-### 2. Game Phase
-- Multiplier starts at 1.00x and increases over time
-- Players can cash out at any point
-- Crash point is predetermined using provably fair algorithm
-- Real-time multiplier updates every 100ms
-
-### 3. Crash & Payout
-- Game crashes at predetermined point
-- Players who cashed out before crash receive their winnings
-- Players who didn't cash out lose their bet
-- 5-second break before next round starts
-
-## 🔌 API Endpoints
-
-### Authentication
-```
-POST /api/auth/register    - Register new user
-POST /api/auth/login       - User login
-GET  /api/auth/me          - Get current user info
-POST /api/auth/refresh     - Refresh JWT token
-```
-
-### Game
-```
-GET  /api/game/stats       - Game statistics
-GET  /api/game/recent      - Recent game rounds
-GET  /api/game/history     - User betting history
-GET  /api/game/leaderboard - Leaderboards
-```
-
-### User
-```
-GET  /api/user/profile     - User profile
-PUT  /api/user/profile     - Update profile
-PUT  /api/user/password    - Change password
-GET  /api/user/balance     - Current balance
-```
-
-## 🔌 Socket Events
-
-### Client to Server
-```javascript
-// Authentication (on connection)
-socket.auth = { token: 'jwt-token' };
-
-// Place bet
-socket.emit('place_bet', { amount: 10.50 });
-
-// Cash out
-socket.emit('cash_out');
-
-// Send chat message
-socket.emit('chat_message', { message: 'Good luck everyone!' });
-
-// Request game history
-socket.emit('get_game_history');
-```
-
-### Server to Client
-```javascript
-// Game state updates
-socket.on('game_state', (state) => {
-  // Current game state
-});
-
-// Round events
-socket.on('round_started', (data) => {
-  // New round started, betting phase begins
-});
-
-socket.on('round_running', (data) => {
-  // Game phase started, multiplier increasing
-});
-
-socket.on('round_crashed', (data) => {
-  // Round ended, show results
-});
-
-// Multiplier updates
-socket.on('multiplier_update', (data) => {
-  // Real-time multiplier updates
-});
-
-// Betting events
-socket.on('bet_placed', (data) => {
-  // Someone placed a bet
-});
-
-socket.on('user_cashed_out', (data) => {
-  // Someone cashed out
-});
-
-// Personal events
-socket.on('bet_placed_success', (result) => {
-  // Your bet was placed successfully
-});
-
-socket.on('cash_out_success', (result) => {
-  // You cashed out successfully
-});
-
-socket.on('bet_error', (error) => {
-  // Betting error occurred
-});
-
-// Chat
-socket.on('chat_message', (data) => {
-  // New chat message
-});
-```
-
-## 🗄️ Database Schema
-
-### Users Table
-```sql
-- id (PRIMARY KEY)
-- username (UNIQUE)
-- email (UNIQUE) 
-- password_hash
-- balance
-- total_wagered
-- total_won
-- games_played
-- created_at
-- updated_at
-```
-
-### Game Rounds Table
-```sql
-- id (PRIMARY KEY)
-- round_id (UNIQUE)
-- crash_point
-- start_time
-- end_time
-- status (waiting, running, crashed)
-- created_at
-```
-
-### Bets Table
-```sql
-- id (PRIMARY KEY)
-- bet_id (UNIQUE)
-- user_id (FOREIGN KEY)
-- round_id (FOREIGN KEY)
-- bet_amount
-- cash_out_at
-- cash_out_amount
-- profit
-- status (active, cashed_out, lost)
-- placed_at
-- cashed_out_at
-```
-
-## ⚙️ Configuration
-
-### Environment Variables
-```bash
-# Server
+```env
+# Server Configuration
 PORT=3000
 NODE_ENV=development
 
-# Security
-JWT_SECRET=your-secret-key
-
 # Database
-DATABASE_URL=./data/crash_game.db
+MONGODB_URI=mongodb://localhost:27017/crypto-crash-game
 
-# Game Settings
-MIN_BET_AMOUNT=1
-MAX_BET_AMOUNT=1000
-HOUSE_EDGE=0.01
-MIN_MULTIPLIER=1.0
-MAX_MULTIPLIER=100.0
-
-# Rate Limiting
+# Security
+CORS_ORIGINS=http://localhost:3000,http://localhost:3001
 RATE_LIMIT_WINDOW_MS=900000
 RATE_LIMIT_MAX_REQUESTS=100
 
-# CORS
-CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+# Game Settings
+GAME_ROUND_DURATION_MS=10000
+MULTIPLIER_TICK_MS=100
+MAX_CRASH_POINT=13.0
+
+# External APIs
+COINGECKO_API_URL=https://api.coingecko.com/api/v3
+PRICE_CACHE_DURATION_MS=10000
 ```
 
-### Game Configuration
-- **Betting Time**: 10 seconds per round
-- **Multiplier Update**: Every 100ms
-- **House Edge**: Configurable (default 1%)
-- **Multiplier Range**: 1.0x to 100.0x
-- **Break Between Rounds**: 5 seconds
+### 4. Database Setup
 
-## 🔒 Security Features
-
-- **JWT Authentication**: Secure token-based authentication
-- **Password Hashing**: Bcrypt with configurable salt rounds
-- **Rate Limiting**: Prevent API abuse
-- **Input Validation**: Comprehensive request validation
-- **CORS Protection**: Configurable cross-origin requests
-- **Helmet Security**: Security headers middleware
-- **SQL Injection Prevention**: Parameterized queries
-
-## 📊 Monitoring & Logging
-
-- **Winston Logging**: Structured logging with multiple transports
-- **Error Tracking**: Comprehensive error handling and logging
-- **Performance Monitoring**: Request timing and performance metrics
-- **Game Analytics**: Detailed game statistics and user behavior
-
-## 🧪 Testing
+Make sure MongoDB is running, then seed the database with test data:
 
 ```bash
-# Run tests
-npm test
-
-# Run tests with coverage
-npm run test:coverage
+npm run seed
 ```
 
-## 🚀 Deployment
+### 5. Start the Server
 
-### Production Checklist
-- [ ] Set strong JWT_SECRET
-- [ ] Configure production database
-- [ ] Set up proper logging
-- [ ] Configure rate limiting
-- [ ] Set up SSL/TLS
-- [ ] Configure CORS origins
-- [ ] Set up monitoring
-- [ ] Configure backups
+```bash
+# Development mode (with auto-restart)
+npm run dev
 
-### Docker Deployment
-```dockerfile
-# Dockerfile included for containerized deployment
-docker build -t crash-game-backend .
-docker run -p 3000:3000 crash-game-backend
+# Production mode
+npm start
 ```
 
-## 🤝 Contributing
+The server will start on `http://localhost:3000`
 
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open Pull Request
+## API Endpoints
 
-## 📝 License
+### User Management
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+#### Create Player
+```bash
+curl -X POST http://localhost:3000/api/user \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Test Player"}'
+```
 
-## 🎯 Roadmap
+#### Get Player Details
+```bash
+curl http://localhost:3000/api/user/{playerId}
+```
 
-- [ ] Add auto cash-out functionality
-- [ ] Implement tournament system
-- [ ] Add social features (friends, chat rooms)
-- [ ] Mobile app API endpoints
-- [ ] Advanced analytics dashboard
-- [ ] Multi-currency support
-- [ ] Referral system
-- [ ] VIP levels and rewards
+#### Get Player Wallet
+```bash
+curl http://localhost:3000/api/user/{playerId}/wallet
+```
 
-## 📞 Support
+#### List All Players
+```bash
+curl http://localhost:3000/api/user
+```
 
-For support, email support@crashgame.com or join our Discord server.
+### Game Operations
 
----
+#### Place Bet
+```bash
+curl -X POST http://localhost:3000/api/game/bet \
+  -H "Content-Type: application/json" \
+  -d '{
+    "playerId": "player_id_here",
+    "usdAmount": 10.50,
+    "currency": "BTC"
+  }'
+```
 
-**⚠️ Disclaimer**: This is a gambling game implementation. Please ensure compliance with local laws and regulations regarding online gambling in your jurisdiction.
+#### Cash Out
+```bash
+curl -X POST http://localhost:3000/api/game/cashout \
+  -H "Content-Type: application/json" \
+  -d '{"playerId": "player_id_here"}'
+```
+
+#### Get Game Status
+```bash
+curl http://localhost:3000/api/game/status
+```
+
+#### Get Round History
+```bash
+curl http://localhost:3000/api/game/rounds?limit=10&offset=0
+```
+
+#### Get Specific Round
+```bash
+curl http://localhost:3000/api/game/rounds/{roundNumber}
+```
+
+## WebSocket Events
+
+### Client → Server Events
+
+#### Authenticate
+```javascript
+socket.emit('authenticate', {
+  playerId: 'player_id_here',
+  playerName: 'Player Name'
+});
+```
+
+#### Place Bet
+```javascript
+socket.emit('place_bet', {
+  usdAmount: 10.50,
+  currency: 'BTC'
+});
+```
+
+#### Cash Out
+```javascript
+socket.emit('cashout_request', {});
+```
+
+#### Get Game State
+```javascript
+socket.emit('get_game_state');
+```
+
+### Server → Client Events
+
+#### Game Events
+- `round_start` - New round begins
+- `multiplier_update` - Multiplier updates (every second)
+- `round_end` - Round ends with crash point
+- `bet_placed` - Player places bet
+- `player_cashout` - Player cashes out
+
+#### Response Events
+- `authenticated` - Authentication successful
+- `bet_placed_success` / `bet_placed_error` - Bet placement result
+- `cashout_success` / `cashout_error` - Cashout result
+- `game_state` - Current game state
+- `error` - General error messages
+
+### Example WebSocket Usage
+
+```javascript
+const io = require('socket.io-client');
+const socket = io('http://localhost:3000');
+
+// Authenticate
+socket.emit('authenticate', {
+  playerId: 'your_player_id',
+  playerName: 'Your Name'
+});
+
+// Listen for game events
+socket.on('round_start', (data) => {
+  console.log('New round started:', data);
+});
+
+socket.on('multiplier_update', (data) => {
+  console.log('Multiplier:', data.multiplier);
+});
+
+socket.on('round_end', (data) => {
+  console.log('Round ended at:', data.crashPoint);
+});
+
+// Place a bet
+socket.emit('place_bet', {
+  usdAmount: 5.00,
+  currency: 'BTC'
+});
+
+// Cash out
+socket.emit('cashout_request', {});
+```
+
+## Game Logic
+
+### Crash Point Algorithm
+
+The crash point is generated using a provably fair algorithm:
+
+```javascript
+function generateCrashPoint(seed, roundNumber) {
+  const input = `${seed}-${roundNumber}`;
+  const hash = crypto.createHash('sha256').update(input).digest('hex');
+  const randomValue = parseInt(hash.slice(0, 6), 16);
+  const crashPoint = (randomValue % 120) / 10 + 1.0;
+  return Math.round(crashPoint * 100) / 100;
+}
+```
+
+### Game Flow
+
+1. **Round Start**: Every 10 seconds, a new round begins
+2. **Betting Window**: Players have 5 seconds to place bets
+3. **Multiplier Growth**: Multiplier increases by 0.01 every 100ms
+4. **Crash**: When multiplier reaches the predetermined crash point, round ends
+5. **Payouts**: Players who cashed out before crash receive payouts
+6. **Next Round**: After 3-second break, next round starts
+
+### Price Caching
+
+Crypto prices are fetched from CoinGecko and cached for 10 seconds to:
+- Reduce API calls
+- Ensure consistent pricing during rapid transactions
+- Provide fallback prices if API is unavailable
+
+## Testing
+
+### Manual Testing
+
+1. **Start the server**: `npm run dev`
+2. **Seed test data**: `npm run seed`
+3. **Test API endpoints** using curl or Postman
+4. **Connect WebSocket client** to test real-time features
+
+### Test Scenarios
+
+1. **Create players and place bets**
+2. **Test cashout at different multipliers**
+3. **Verify wallet balances update correctly**
+4. **Test error handling** (insufficient funds, betting after window closes)
+5. **Monitor real-time events** during game rounds
+
+## Development Notes
+
+### Key Components
+
+- **GameEngine**: Manages round lifecycle, multiplier updates, and game state
+- **SocketHandler**: Handles WebSocket connections and real-time events
+- **PriceFetcher**: Manages crypto price caching and API calls
+- **Models**: MongoDB schemas for players, rounds, and transactions
+
+### Security Features
+
+- Rate limiting on API endpoints
+- Input validation and sanitization
+- CORS configuration
+- Helmet for security headers
+- Error handling without exposing sensitive data
+
+### Scalability Considerations
+
+- Database indexing on frequently queried fields
+- Connection pooling for MongoDB
+- Efficient WebSocket event handling
+- Price caching to reduce external API calls
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Database connection fails**
+   - Check MongoDB is running
+   - Verify MONGODB_URI in .env
+
+2. **WebSocket connections fail**
+   - Check CORS_ORIGINS configuration
+   - Verify client connects to correct port
+
+3. **Price fetching fails**
+   - Check internet connection
+   - CoinGecko API might be rate limited
+   - Fallback prices will be used
+
+4. **Game rounds not starting**
+   - Check server logs for errors
+   - Verify game engine initialization
+
+### Logs
+
+The application uses a custom logger that outputs to console with timestamps and log levels. Check server logs for detailed error information.
+
+## License
+
+MIT License - see LICENSE file for details
